@@ -10,7 +10,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, RefreshCw, ArrowRight, CheckCircle, Clock, Truck, XCircle, Package, Trash2 } from 'lucide-react';
+import { Plus, RefreshCw, ArrowRight, CheckCircle, Clock, Truck, XCircle, Package, Trash2, ChevronDown, ChevronUp, Box } from 'lucide-react';
+
+interface User {
+  id: string;
+  role: 'ADMIN' | 'BRANCH_MANAGER' | 'CASHIER';
+  branchId?: string;
+  name?: string;
+}
 
 interface Ingredient {
   id: string;
@@ -27,6 +34,7 @@ interface TransferItem {
   ingredientId: string;
   quantity: number;
   unit: string;
+  ingredient?: Ingredient;
 }
 
 interface InventoryTransfer {
@@ -48,17 +56,34 @@ export default function InventoryTransfers() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState('');
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Get user info
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      setUser(JSON.parse(userStr));
+    }
+  }, []);
 
   useEffect(() => {
     fetchData();
-  }, [statusFilter]);
+  }, [statusFilter, user]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       console.log('Fetching transfers data...');
+      
+      // Build query params based on user role
+      let url = `/api/transfers?status=${statusFilter}`;
+      if (user?.role === 'BRANCH_MANAGER' && user.branchId) {
+        url += `&sourceBranchId=${user.branchId}`;
+      }
+
       const [transfersRes, branchesRes, ingredientsRes] = await Promise.all([
-        fetch(`/api/transfers?status=${statusFilter}`),
+        fetch(url),
         fetch('/api/branches'),
         fetch('/api/ingredients'),
       ]);
@@ -133,6 +158,16 @@ export default function InventoryTransfers() {
     }
   };
 
+  const toggleRow = (id: string) => {
+    const newExpanded = new Set(expandedRows);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
+    } else {
+      newExpanded.add(id);
+    }
+    setExpandedRows(newExpanded);
+  };
+
   const handleAddItem = () => {
     setTransferItems([...transferItems, { ingredientId: '', quantity: 1, unit: '' }]);
   };
@@ -160,6 +195,12 @@ export default function InventoryTransfers() {
     const formData = new FormData(e.target as HTMLFormElement);
     const sourceBranchId = formData.get('sourceBranchId');
     const targetBranchId = formData.get('targetBranchId');
+
+    // For branch managers, ensure they're transferring from their own branch
+    if (user?.role === 'BRANCH_MANAGER' && user.branchId && sourceBranchId !== user.branchId) {
+      alert('You can only transfer from your own branch');
+      return;
+    }
 
     console.log('Creating transfer:', { sourceBranchId, targetBranchId, transferItems });
 
@@ -227,7 +268,7 @@ export default function InventoryTransfers() {
       const response = await fetch(`/api/transfers/${transferId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, userId: user?.id }),
       });
 
       if (response.ok) {
@@ -241,6 +282,39 @@ export default function InventoryTransfers() {
     }
   };
 
+  const deleteTransfer = async (transferId: string) => {
+    if (!confirm('Are you sure you want to delete this transfer?')) return;
+    
+    try {
+      const response = await fetch(`/api/transfers/${transferId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        fetchData();
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Failed to delete transfer');
+      }
+    } catch (error) {
+      console.error('Failed to delete transfer:', error);
+    }
+  };
+
+  const canManageTransfer = (transfer: InventoryTransfer) => {
+    if (user?.role === 'ADMIN') return true;
+    if (user?.role === 'BRANCH_MANAGER' && transfer.sourceBranchId === user.branchId) return true;
+    return false;
+  };
+
+  const filteredBranches = branches.filter(b => {
+    if (user?.role === 'BRANCH_MANAGER' && user.branchId) {
+      // For branch managers, only show their branch as source
+      return b.id === user.branchId;
+    }
+    return true;
+  });
+
   return (
     <div className="space-y-6">
       <Card className="bg-white/80 backdrop-blur-sm">
@@ -251,7 +325,12 @@ export default function InventoryTransfers() {
                 <ArrowRight className="h-5 w-5 text-emerald-600" />
                 Inventory Transfers
               </CardTitle>
-              <CardDescription>Transfer inventory between branches</CardDescription>
+              <CardDescription>
+                {user?.role === 'BRANCH_MANAGER' 
+                  ? 'Transfer inventory from your branch'
+                  : 'Transfer inventory between branches'
+                }
+              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
               <Select value={statusFilter || 'all'} onValueChange={(val) => setStatusFilter(val === 'all' ? '' : val)}>
@@ -287,16 +366,19 @@ export default function InventoryTransfers() {
                       <div className="grid grid-cols-2 gap-4">
                         <div className="grid gap-2">
                           <Label>Source Branch *</Label>
-                          <Select name="sourceBranchId" required>
+                          <Select name="sourceBranchId" required disabled={user?.role === 'BRANCH_MANAGER'}>
                             <SelectTrigger>
                               <SelectValue placeholder="From" />
                             </SelectTrigger>
                             <SelectContent>
-                              {branches.map(b => (
+                              {filteredBranches.map(b => (
                                 <SelectItem key={b.id} value={b.id}>{b.branchName}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
+                          {user?.role === 'BRANCH_MANAGER' && (
+                            <p className="text-xs text-slate-500">You can only transfer from your branch</p>
+                          )}
                         </div>
                         <div className="grid gap-2">
                           <Label>Target Branch *</Label>
@@ -381,80 +463,143 @@ export default function InventoryTransfers() {
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin h-8 w-8 border-4 border-emerald-500 border-t-transparent rounded-full"></div>
             </div>
+          ) : transfers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+              <Box className="h-12 w-12 mb-4 text-slate-400" />
+              <p>No transfers found</p>
+            </div>
           ) : (
             <ScrollArea className="h-[500px]">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10"></TableHead>
                     <TableHead>Transfer #</TableHead>
                     <TableHead>From → To</TableHead>
-                    <TableHead>Items</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Requested</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    {user?.role === 'ADMIN' && <TableHead className="text-right">Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {transfers.map((transfer) => (
-                    <TableRow key={transfer.id}>
-                      <TableCell className="font-medium">{transfer.transferNumber}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1 text-sm">
-                          <span>{transfer.sourceBranch.branchName}</span>
-                          <ArrowRight className="h-3 w-3 text-slate-400" />
-                          <span>{transfer.targetBranch.branchName}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>{transfer.items.length} items</TableCell>
-                      <TableCell>
-                        <Badge className={getStatusColor(transfer.status)}>
-                          <span className="flex items-center gap-1">
-                            {getStatusIcon(transfer.status)}
-                            {transfer.status.replace('_', ' ')}
-                          </span>
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {new Date(transfer.requestedAt).toLocaleDateString()}
-                        {transfer.completedAt && (
-                          <span className="block text-xs text-slate-500">
-                            Completed: {new Date(transfer.completedAt).toLocaleDateString()}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {transfer.status === 'PENDING' && (
+                    <>
+                      <TableRow key={transfer.id}>
+                        <TableCell>
                           <Button
+                            variant="ghost"
                             size="sm"
-                            variant="outline"
-                            onClick={() => updateTransferStatus(transfer.id, 'APPROVED')}
+                            onClick={() => toggleRow(transfer.id)}
+                            className="h-8 w-8 p-0"
                           >
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Approve
+                            {expandedRows.has(transfer.id) ? (
+                              <ChevronUp className="h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4" />
+                            )}
                           </Button>
+                        </TableCell>
+                        <TableCell className="font-medium">{transfer.transferNumber}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1 text-sm">
+                            <span>{transfer.sourceBranch.branchName}</span>
+                            <ArrowRight className="h-3 w-3 text-slate-400" />
+                            <span>{transfer.targetBranch.branchName}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={getStatusColor(transfer.status)}>
+                            <span className="flex items-center gap-1">
+                              {getStatusIcon(transfer.status)}
+                              {transfer.status.replace('_', ' ')}
+                            </span>
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {new Date(transfer.requestedAt).toLocaleDateString()}
+                          {transfer.completedAt && (
+                            <span className="block text-xs text-slate-500">
+                              Completed: {new Date(transfer.completedAt).toLocaleDateString()}
+                            </span>
+                          )}
+                        </TableCell>
+                        {user?.role === 'ADMIN' && (
+                          <TableCell className="text-right">
+                            {transfer.status === 'PENDING' && canManageTransfer(transfer) && (
+                              <div className="flex items-center justify-end gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => updateTransferStatus(transfer.id, 'APPROVED')}
+                                >
+                                  <CheckCircle className="h-4 w-4 mr-1" />
+                                  Approve
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => deleteTransfer(transfer.id)}
+                                >
+                                  <XCircle className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            )}
+                            {transfer.status === 'APPROVED' && canManageTransfer(transfer) && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => updateTransferStatus(transfer.id, 'IN_TRANSIT')}
+                              >
+                                <Truck className="h-4 w-4 mr-1" />
+                                Ship
+                              </Button>
+                            )}
+                            {transfer.status === 'IN_TRANSIT' && canManageTransfer(transfer) && (
+                              <Button
+                                size="sm"
+                                className="bg-emerald-600 hover:bg-emerald-700"
+                                onClick={() => updateTransferStatus(transfer.id, 'COMPLETED')}
+                              >
+                                <CheckCircle className="h-4 w-4 mr-1" />
+                                Complete
+                              </Button>
+                            )}
+                          </TableCell>
                         )}
-                        {transfer.status === 'APPROVED' && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => updateTransferStatus(transfer.id, 'IN_TRANSIT')}
-                          >
-                            <Truck className="h-4 w-4 mr-1" />
-                            Ship
-                          </Button>
-                        )}
-                        {transfer.status === 'IN_TRANSIT' && (
-                          <Button
-                            size="sm"
-                            className="bg-emerald-600 hover:bg-emerald-700"
-                            onClick={() => updateTransferStatus(transfer.id, 'COMPLETED')}
-                          >
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Complete
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
+                      </TableRow>
+                      {expandedRows.has(transfer.id) && (
+                        <TableRow>
+                          <TableCell colSpan={user?.role === 'ADMIN' ? 6 : 5}>
+                            <div className="p-4 bg-slate-50 rounded-lg">
+                              <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                <Package className="h-4 w-4" />
+                                Transfer Items ({transfer.items.length})
+                              </h4>
+                              <div className="space-y-2">
+                                {transfer.items.map((item, idx) => (
+                                  <div key={idx} className="flex items-center justify-between text-sm py-2 border-b border-slate-200 last:border-0">
+                                    <span className="font-medium">{item.ingredient?.name || item.ingredientId}</span>
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-slate-600">{item.quantity} {item.unit}</span>
+                                    {item.ingredient?.costPerUnit && (
+                                      <span className="text-slate-500">
+                                        (${(item.quantity * (item.ingredient.costPerUnit || 0)).toFixed(2)})
+                                      </span>
+                                    )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              {transfer.notes && (
+                                <div className="mt-3 pt-3 border-t border-slate-200">
+                                  <p className="text-xs text-slate-500"><strong>Notes:</strong> {transfer.notes}</p>
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </>
                   ))}
                 </TableBody>
               </Table>

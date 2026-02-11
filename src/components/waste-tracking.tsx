@@ -10,7 +10,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, RefreshCw, AlertTriangle, Trash2, TrendingDown, Calendar } from 'lucide-react';
+import { Plus, RefreshCw, AlertTriangle, Trash2, TrendingDown, Calendar, Building2 } from 'lucide-react';
+
+interface User {
+  id: string;
+  role: 'ADMIN' | 'BRANCH_MANAGER' | 'CASHIER';
+  branchId?: string;
+  name?: string;
+}
+
+interface Branch {
+  id: string;
+  branchName: string;
+}
 
 interface Ingredient {
   id: string;
@@ -21,29 +33,37 @@ interface Ingredient {
 
 interface WasteLog {
   id: string;
-  branchId: string;
-  ingredient: Ingredient;
-  quantity: number;
-  unit: string;
-  reason: 'EXPIRED' | 'SPOILED' | 'DAMAGED' | 'PREPARATION' | 'MISTAKE' | 'THEFT' | 'OTHER';
-  lossValue: number;
+  branch: Branch;
+  items: Array<{
+    ingredient: Ingredient;
+    quantity: number;
+    unit: string;
+    cost: number;
+  }>;
+  reason: 'EXPIRED' | 'SPOILED' | 'DAMAGED' | 'PREPARATION_ERROR' | 'OTHER';
   notes?: string;
+  totalLoss: number;
   createdAt: string;
-  recorder: { name?: string };
 }
 
 interface WasteStats {
-  totalLogs: number;
-  totalLossValue: number;
-  avgLossPerLog: number;
+  summary: {
+    totalLogs: number;
+    totalLoss: number;
+    recentLoss: number;
+    recentLogs: number;
+  };
 }
 
 export default function WasteTracking() {
   const [wasteLogs, setWasteLogs] = useState<WasteLog[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
-  const [stats, setStats] = useState<WasteStats>({ totalLogs: 0, totalLossValue: 0, avgLossPerLog: 0 });
+  const [stats, setStats] = useState({ totalLogs: 0, totalLoss: 0, recentLoss: 0, recentLogs: 0 });
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>('');
+  const [user, setUser] = useState<User | null>(null);
   const [formData, setFormData] = useState({
     ingredientId: '',
     quantity: 0,
@@ -52,20 +72,49 @@ export default function WasteTracking() {
   });
 
   useEffect(() => {
-    fetchData();
+    // Get user info
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const userData = JSON.parse(userStr);
+      setUser(userData);
+      // For branch managers, set their branch as selected
+      if (userData.role !== 'ADMIN' && userData.branchId) {
+        setSelectedBranchId(userData.branchId);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [selectedBranchId, user]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       console.log('Fetching waste data...');
-      const [wasteRes, ingredientsRes, statsRes] = await Promise.all([
-        fetch('/api/waste-logs'),
+      
+      // If user is not ADMIN and has branchId, fetch only their branch data
+      if (user?.role === 'BRANCH_MANAGER' && user.branchId) {
+        setSelectedBranchId(user.branchId);
+      }
+
+      // Build query params
+      let wasteUrl = '/api/waste-logs';
+      let statsUrl = '/api/waste-logs/stats';
+      if (selectedBranchId) {
+        wasteUrl += `?branchId=${selectedBranchId}`;
+        statsUrl += `?branchId=${selectedBranchId}`;
+      }
+
+      const [wasteRes, branchesRes, ingredientsRes, statsRes] = await Promise.all([
+        fetch(wasteUrl),
+        fetch('/api/branches'),
         fetch('/api/ingredients'),
-        fetch('/api/waste-logs/stats'),
+        fetch(statsUrl),
       ]);
 
       console.log('Waste response:', wasteRes.status);
+      console.log('Branches response:', branchesRes.status);
       console.log('Ingredients response:', ingredientsRes.status);
       console.log('Stats response:', statsRes.status);
 
@@ -76,6 +125,14 @@ export default function WasteTracking() {
       } else {
         const errorText = await wasteRes.text();
         console.error('Failed to fetch waste logs - Status:', wasteRes.status, 'Response:', errorText);
+      }
+      if (branchesRes.ok) {
+        const data = await branchesRes.json();
+        console.log('Branches:', data.branches);
+        setBranches(data.branches);
+      } else {
+        const errorText = await branchesRes.text();
+        console.error('Failed to fetch branches - Status:', branchesRes.status, 'Response:', errorText);
       }
       if (ingredientsRes.ok) {
         const data = await ingredientsRes.json();
@@ -109,12 +166,10 @@ export default function WasteTracking() {
         return 'bg-orange-100 text-orange-700';
       case 'DAMAGED':
         return 'bg-yellow-100 text-yellow-700';
-      case 'PREPARATION':
+      case 'PREPARATION_ERROR':
         return 'bg-blue-100 text-blue-700';
-      case 'MISTAKE':
-        return 'bg-purple-100 text-purple-700';
-      case 'THEFT':
-        return 'bg-red-200 text-red-800';
+      case 'OTHER':
+        return 'bg-slate-100 text-slate-700';
       default:
         return 'bg-slate-100 text-slate-700';
     }
@@ -123,25 +178,20 @@ export default function WasteTracking() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    const userStr = localStorage.getItem('user');
-    const user = userStr ? JSON.parse(userStr) : null;
-
-    // If user is ADMIN without branch, get the first branch
-    let branchId = user?.branchId;
-    if (!branchId && user?.role === 'ADMIN') {
-      try {
-        const res = await fetch('/api/branches');
-        const data = await res.json();
-        if (data.branches && data.branches.length > 0) {
-          branchId = data.branches[0].id;
-        }
-      } catch (err) {
-        console.error('Failed to fetch branches:', err);
-      }
+    // Determine branch ID - use selected branch for admin, user's branch for managers
+    let branchId = selectedBranchId;
+    if (!branchId && user?.branchId) {
+      branchId = user.branchId;
     }
 
     if (!branchId) {
-      alert('No branch assigned. Please contact administrator.');
+      alert('No branch selected. Please select a branch.');
+      return;
+    }
+
+    const ingredient = ingredients.find(i => i.id === formData.ingredientId);
+    if (!ingredient) {
+      alert('Please select an ingredient');
       return;
     }
 
@@ -150,10 +200,15 @@ export default function WasteTracking() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...formData,
           branchId,
-          userId: user?.id,
-          unit: ingredients.find(i => i.id === formData.ingredientId)?.unit || 'unit',
+          reason: formData.reason,
+          notes: formData.notes,
+          items: [{
+            ingredientId: formData.ingredientId,
+            quantity: formData.quantity,
+            unit: ingredient.unit,
+            cost: formData.quantity * ingredient.costPerUnit,
+          }],
         }),
       });
 
@@ -165,8 +220,8 @@ export default function WasteTracking() {
         const data = await response.json();
         console.error('Waste log error:', data);
         let errorMsg = data.error || 'Failed to record waste';
-        if (data.available !== undefined) {
-          errorMsg = `Insufficient stock. Available: ${data.available}, Requested: ${data.requested}`;
+        if (data.issues) {
+          errorMsg = data.issues.map((i: any) => i.message).join(', ');
         }
         alert(errorMsg);
       }
@@ -175,6 +230,9 @@ export default function WasteTracking() {
       alert('Failed to record waste');
     }
   };
+
+  const isAdmin = user?.role === 'ADMIN';
+  const branchManagerHasBranch = user?.role === 'BRANCH_MANAGER' && user.branchId;
 
   return (
     <div className="space-y-6">
@@ -199,7 +257,7 @@ export default function WasteTracking() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-slate-600">Total Loss Value</p>
-                <p className="text-2xl font-bold text-red-600">${stats.totalLossValue.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-red-600">${stats.totalLoss.toFixed(2)}</p>
               </div>
               <div className="p-3 bg-red-100 rounded-full">
                 <TrendingDown className="h-6 w-6 text-red-600" />
@@ -212,8 +270,8 @@ export default function WasteTracking() {
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-slate-600">Avg Loss per Log</p>
-                <p className="text-2xl font-bold text-orange-600">${stats.avgLossPerLog.toFixed(2)}</p>
+                <p className="text-sm text-slate-600">Recent Loss (7d)</p>
+                <p className="text-2xl font-bold text-orange-600">${stats.recentLoss.toFixed(2)}</p>
               </div>
               <div className="p-3 bg-orange-100 rounded-full">
                 <AlertTriangle className="h-6 w-6 text-orange-600" />
@@ -231,9 +289,31 @@ export default function WasteTracking() {
                 <AlertTriangle className="h-5 w-5 text-emerald-600" />
                 Waste & Loss Tracking
               </CardTitle>
-              <CardDescription>Record and track inventory waste</CardDescription>
+              <CardDescription>
+                {isAdmin 
+                  ? 'Track and manage inventory waste across all branches'
+                  : branchManagerHasBranch
+                  ? 'Track waste and loss for your branch'
+                  : 'Select a branch to view waste logs'
+                }
+              </CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              {isAdmin && (
+                <Select value={selectedBranchId || 'all'} onValueChange={(val) => setSelectedBranchId(val === 'all' ? '' : val)}>
+                  <SelectTrigger className="w-[200px]">
+                    <SelectValue placeholder="All Branches" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Branches</SelectItem>
+                    {branches.map(b => (
+                      <SelectItem key={b.id} value={b.id}>
+                        {b.branchName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Button variant="outline" size="sm" onClick={fetchData}>
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh
@@ -252,12 +332,34 @@ export default function WasteTracking() {
                   </DialogHeader>
                   <form onSubmit={handleSubmit}>
                     <div className="grid gap-4 py-4">
+                      {isAdmin && (
+                        <div className="grid gap-2">
+                          <Label>Branch *</Label>
+                          <Select 
+                            value={selectedBranchId} 
+                            onValueChange={(val) => setSelectedBranchId(val)}
+                            required
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select branch" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {branches.map(b => (
+                                <SelectItem key={b.id} value={b.id}>
+                                  {b.branchName}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
                       <div className="grid gap-2">
                         <Label>Ingredient *</Label>
                         <Select 
                           value={formData.ingredientId} 
                           onValueChange={(val) => setFormData({ ...formData, ingredientId: val })}
                           required
+                          disabled={!selectedBranchId}
                         >
                           <SelectTrigger>
                             <SelectValue placeholder="Select ingredient" />
@@ -279,6 +381,7 @@ export default function WasteTracking() {
                           value={formData.quantity}
                           onChange={(e) => setFormData({ ...formData, quantity: parseFloat(e.target.value) })}
                           required
+                          disabled={!selectedBranchId}
                         />
                       </div>
                       <div className="grid gap-2">
@@ -294,9 +397,7 @@ export default function WasteTracking() {
                             <SelectItem value="EXPIRED">Expired</SelectItem>
                             <SelectItem value="SPOILED">Spoiled</SelectItem>
                             <SelectItem value="DAMAGED">Damaged</SelectItem>
-                            <SelectItem value="PREPARATION">Preparation</SelectItem>
-                            <SelectItem value="MISTAKE">Mistake</SelectItem>
-                            <SelectItem value="THEFT">Theft</SelectItem>
+                            <SelectItem value="PREPARATION_ERROR">Preparation Error</SelectItem>
                             <SelectItem value="OTHER">Other</SelectItem>
                           </SelectContent>
                         </Select>
@@ -314,7 +415,7 @@ export default function WasteTracking() {
                       <Button type="button" variant="outline" onClick={() => { setIsDialogOpen(false); }}>
                         Cancel
                       </Button>
-                      <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700">
+                      <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700" disabled={!selectedBranchId}>
                         Record Waste
                       </Button>
                     </DialogFooter>
@@ -329,17 +430,25 @@ export default function WasteTracking() {
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin h-8 w-8 border-4 border-emerald-500 border-t-transparent rounded-full"></div>
             </div>
+          ) : !selectedBranchId ? (
+            <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+              <Building2 className="h-12 w-12 mb-4 text-slate-400" />
+              <p>Please select a branch to view waste logs</p>
+            </div>
+          ) : wasteLogs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-slate-500">
+              <Trash2 className="h-12 w-12 mb-4 text-slate-400" />
+              <p>No waste logs found for this branch</p>
+            </div>
           ) : (
             <ScrollArea className="h-[500px]">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Date</TableHead>
-                    <TableHead>Ingredient</TableHead>
-                    <TableHead>Quantity</TableHead>
+                    <TableHead>Items</TableHead>
                     <TableHead>Reason</TableHead>
-                    <TableHead>Loss Value</TableHead>
-                    <TableHead>Recorded By</TableHead>
+                    <TableHead>Total Loss</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -351,20 +460,25 @@ export default function WasteTracking() {
                           {new Date(log.createdAt).toLocaleDateString()}
                         </div>
                       </TableCell>
-                      <TableCell className="font-medium">{log.ingredient.name}</TableCell>
                       <TableCell>
-                        {log.quantity.toFixed(2)} {log.unit}
+                        <div className="space-y-1">
+                          {log.items.map((item, idx) => (
+                            <div key={idx} className="text-sm">
+                              <span className="font-medium">{item.ingredient.name}</span>
+                              <span className="text-slate-600 ml-2">
+                                {item.quantity} {item.unit}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <Badge className={getReasonColor(log.reason)}>
-                          {log.reason}
+                          {log.reason.replace('_', ' ')}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-red-600 font-medium">
-                        ${log.lossValue.toFixed(2)}
-                      </TableCell>
-                      <TableCell>
-                        {log.recorder.name || 'Unknown'}
+                        ${log.totalLoss.toFixed(2)}
                       </TableCell>
                     </TableRow>
                   ))}
