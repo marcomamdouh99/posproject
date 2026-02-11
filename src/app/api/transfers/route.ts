@@ -179,6 +179,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Get a valid user ID for the transfer
+    let userId = body.userId;
+    if (!userId) {
+      // Get the first admin user as default
+      const adminUser = await db.user.findFirst({
+        where: { role: 'ADMIN' },
+      });
+      if (adminUser) {
+        userId = adminUser.id;
+      } else {
+        // Fallback to first user if no admin exists
+        const firstUser = await db.user.findFirst();
+        if (!firstUser) {
+          return NextResponse.json(
+            { error: 'No users found in the system' },
+            { status: 400 }
+          );
+        }
+        userId = firstUser.id;
+      }
+    }
+
     // Create transfer with items
     const transfer = await db.inventoryTransfer.create({
       data: {
@@ -186,7 +208,7 @@ export async function POST(request: NextRequest) {
         targetBranchId: validatedData.targetBranchId,
         transferNumber: validatedData.transferNumber,
         notes: validatedData.notes,
-        requestedBy: body.userId || 'system',
+        requestedBy: userId,
         items: {
           create: inventoryChecks.map((item) => ({
             ingredientId: item.ingredientId,
