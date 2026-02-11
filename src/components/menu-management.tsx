@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
-import { Plus, Pencil, Trash2, Coffee, DollarSign, Search, Folder, TrendingUp, Package, Layers, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, Coffee, DollarSign, Search, Folder, TrendingUp, Package, Layers, ChevronDown, ChevronUp, X, List } from 'lucide-react';
 import { useI18n } from '@/lib/i18n-context';
 import { formatCurrency } from '@/lib/utils';
 
